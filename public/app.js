@@ -10,6 +10,12 @@ document.addEventListener('DOMContentLoaded', () => {
   registerServiceWorker();
   loadFolders();
   setupEventListeners();
+  
+  // Handle window resize for responsive view
+  window.addEventListener('resize', updateMobileView);
+  
+  // Initial mobile view check
+  updateMobileView();
 });
 
 // Service Worker Registration
@@ -32,6 +38,47 @@ async function registerServiceWorker() {
 
 // Setup Event Listeners
 function setupEventListeners() {
+  // Mobile folders popup
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const mobileFoldersPopup = document.getElementById('mobileFoldersPopup');
+  const closeMobileFolders = document.getElementById('closeMobileFolders');
+  const folderMenuBtn = document.getElementById('folderMenuBtn');
+  
+  if (sidebarToggle && mobileFoldersPopup) {
+    sidebarToggle.addEventListener('click', () => {
+      mobileFoldersPopup.classList.add('show');
+      renderMobileFoldersList();
+    });
+  }
+  
+  if (closeMobileFolders && mobileFoldersPopup) {
+    closeMobileFolders.addEventListener('click', () => {
+      mobileFoldersPopup.classList.remove('show');
+    });
+  }
+  
+  // Close popup when clicking outside (on the overlay)
+  if (mobileFoldersPopup) {
+    mobileFoldersPopup.addEventListener('click', (e) => {
+      if (e.target === mobileFoldersPopup) {
+        mobileFoldersPopup.classList.remove('show');
+      }
+    });
+  }
+  
+  if (folderMenuBtn) {
+    folderMenuBtn.addEventListener('click', () => {
+      // Close folder content and show empty state
+      document.getElementById('folderContent').style.display = 'none';
+      document.getElementById('emptyState').style.display = 'flex';
+      currentFolderId = null;
+      renderFolders();
+      updateMobileView();
+      // Show sidebar toggle button
+      if (sidebarToggle) sidebarToggle.style.display = 'flex';
+    });
+  }
+
   document.getElementById('folderForm').addEventListener('submit', (e) => {
     e.preventDefault();
     createFolder();
@@ -119,11 +166,51 @@ function renderFolders() {
   });
 }
 
+// Render folders in mobile popup
+function renderMobileFoldersList() {
+  const mobileFoldersList = document.getElementById('mobileFoldersList');
+  mobileFoldersList.innerHTML = '';
+  
+  if (folders.length === 0) {
+    mobileFoldersList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No folders yet</div>';
+    return;
+  }
+  
+  folders.forEach(folder => {
+    const folderItem = document.createElement('div');
+    folderItem.className = 'mobile-folder-item';
+    
+    folderItem.innerHTML = `
+      <div class="mobile-folder-item-content" onclick="event.stopPropagation(); selectFolder('${folder._id}'); document.getElementById('mobileFoldersPopup').classList.remove('show');">
+        <i class="fas fa-folder" style="color: ${folder.color}"></i>
+        <span class="mobile-folder-item-name">${folder.name}</span>
+      </div>
+      <div class="mobile-folder-item-actions">
+        <button class="btn-icon btn-sm" onclick="event.stopPropagation(); editFolder('${folder._id}')" title="Edit">
+          <i class="fas fa-edit"></i>
+        </button>
+        <button class="btn-icon btn-sm" onclick="event.stopPropagation(); deleteFolder('${folder._id}')" title="Delete">
+          <i class="fas fa-trash"></i>
+        </button>
+      </div>
+    `;
+    
+    mobileFoldersList.appendChild(folderItem);
+  });
+}
+
 // Select folder
 async function selectFolder(folderId) {
   currentFolderId = folderId;
   renderFolders();
   
+  // Close sidebar on mobile when folder is selected
+  if (window.innerWidth <= 768) {
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+      sidebar.classList.remove('show');
+    }
+  }
   try {
     const response = await fetch(`${API_BASE}/notes/folder/${folderId}`);
     if (!response.ok) throw new Error('Failed to load notes');
@@ -141,11 +228,35 @@ async function selectFolder(folderId) {
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('folderContent').style.display = 'block';
     
+    // Show folder menu button on mobile
+    updateMobileView();
+    
     // Render notes
     renderNotes();
   } catch (error) {
     console.error('Error selecting folder:', error);
     showToast('Error loading notes', 'danger');
+  }
+}
+
+// Update mobile view visibility
+function updateMobileView() {
+  const isMobile = window.innerWidth <= 768;
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const folderMenuBtn = document.getElementById('folderMenuBtn');
+  
+  if (isMobile) {
+    // Floating "Folders" button always available on mobile
+    if (sidebarToggle) sidebarToggle.style.display = 'flex';
+    
+    // Show "Back" button only if a folder is selected
+    if (folderMenuBtn) {
+      folderMenuBtn.style.display = currentFolderId ? 'flex' : 'none';
+    }
+  } else {
+    // Hide mobile-only buttons on desktop
+    if (sidebarToggle) sidebarToggle.style.display = 'none';
+    if (folderMenuBtn) folderMenuBtn.style.display = 'none';
   }
 }
 
@@ -179,6 +290,7 @@ async function createFolder() {
     
     // Select new folder
     selectFolder(newFolder._id);
+    renderMobileFoldersList();
     showToast('Folder created successfully!');
     renderFolders();
   } catch (error) {
@@ -227,6 +339,7 @@ async function updateFolder() {
     
     // Reload folders
     await loadFolders();
+    renderMobileFoldersList();
     
     if (currentFolderId === folderId) {
       selectFolder(folderId);
@@ -263,6 +376,7 @@ async function deleteFolder(folderId) {
     }
     
     renderFolders();
+    renderMobileFoldersList();
     showToast('Folder deleted successfully!');
   } catch (error) {
     console.error('Error deleting folder:', error);
