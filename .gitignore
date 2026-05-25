@@ -9,3 +9,4 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 *.pem
+crackurpath-firebase-adminsdk-fbsvc-30c2ab54c8.json
