@@ -1,4 +1,4 @@
-const CACHE_NAME = 'notes-pwa-v2';
+const CACHE_NAME = 'notes-pwa-v3';
 
 const STATIC_ASSETS = [
   '/',
@@ -6,61 +6,109 @@ const STATIC_ASSETS = [
   '/app.js',
   '/styles.css',
   '/manifest.json',
+
+  // External CDN assets
   'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
   'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js'
 ];
 
+
+// ======================
 // INSTALL
+// ======================
 self.addEventListener('install', (event) => {
+
   self.skipWaiting();
 
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(STATIC_ASSETS))
+      .then((cache) => {
+        console.log('Caching static assets');
+        return cache.addAll(STATIC_ASSETS);
+      })
   );
 });
 
+
+// ======================
 // ACTIVATE
+// ======================
 self.addEventListener('activate', (event) => {
+
   event.waitUntil(
     caches.keys().then((cacheNames) => {
+
       return Promise.all(
-        cacheNames.map((cache) => {
-          if (cache !== CACHE_NAME) {
-            console.log('Deleting old cache:', cache);
-            return caches.delete(cache);
+        cacheNames.map((cacheName) => {
+
+          // Delete old caches
+          if (cacheName !== CACHE_NAME) {
+            console.log('Deleting old cache:', cacheName);
+            return caches.delete(cacheName);
           }
+
         })
       );
+
     })
   );
 
   self.clients.claim();
 });
 
+
+// ======================
 // FETCH
+// ======================
 self.addEventListener('fetch', (event) => {
 
   // Ignore non-GET requests
-  if (event.request.method !== 'GET') return;
+  if (event.request.method !== 'GET') {
+    return;
+  }
 
-  // API requests → NETWORK FIRST
+
+  // Ignore Firebase & Google APIs
+  if (
+    event.request.url.includes('firebase') ||
+    event.request.url.includes('googleapis') ||
+    event.request.url.includes('gstatic')
+  ) {
+    return;
+  }
+
+
+  // ======================
+  // API REQUESTS
+  // NETWORK FIRST
+  // ======================
   if (event.request.url.includes('/api/')) {
 
     event.respondWith(
+
       fetch(event.request)
-        .then((response) => {
 
-          // Update cache with latest API response
-          const responseClone = response.clone();
+        .then((networkResponse) => {
 
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
+          // Cache successful API responses
+          if (
+            networkResponse &&
+            networkResponse.status === 200
+          ) {
 
-          return response;
+            const responseClone = networkResponse.clone();
+
+            caches.open(CACHE_NAME)
+              .then((cache) => {
+                cache.put(event.request, responseClone);
+              });
+
+          }
+
+          return networkResponse;
         })
+
         .catch(async () => {
 
           // Offline fallback
@@ -80,31 +128,48 @@ self.addEventListener('fetch', (event) => {
               }
             )
           );
+
         })
+
     );
 
     return;
   }
 
-  // HTML pages → NETWORK FIRST
+
+  // ======================
+  // HTML PAGES
+  // NETWORK FIRST
+  // ======================
   if (
     event.request.mode === 'navigate' ||
     event.request.destination === 'document'
   ) {
 
     event.respondWith(
+
       fetch(event.request)
-        .then((response) => {
 
-          // Save latest page in cache
-          const responseClone = response.clone();
+        .then((networkResponse) => {
 
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
+          // Cache latest HTML
+          if (
+            networkResponse &&
+            networkResponse.status === 200
+          ) {
 
-          return response;
+            const responseClone = networkResponse.clone();
+
+            caches.open(CACHE_NAME)
+              .then((cache) => {
+                cache.put(event.request, responseClone);
+              });
+
+          }
+
+          return networkResponse;
         })
+
         .catch(async () => {
 
           // Offline fallback
@@ -112,28 +177,57 @@ self.addEventListener('fetch', (event) => {
             await caches.match(event.request) ||
             caches.match('/index.html')
           );
+
         })
+
     );
 
     return;
   }
 
-  // Static assets → STALE WHILE REVALIDATE
+
+  // ======================
+  // STATIC ASSETS
+  // STALE WHILE REVALIDATE
+  // ======================
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
 
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
+    caches.match(event.request)
 
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, networkResponse.clone());
+      .then((cachedResponse) => {
+
+        const fetchPromise = fetch(event.request)
+
+          .then((networkResponse) => {
+
+            // Cache successful responses only
+            if (
+              networkResponse &&
+              networkResponse.status === 200 &&
+              networkResponse.type === 'basic'
+            ) {
+
+              const responseClone = networkResponse.clone();
+
+              caches.open(CACHE_NAME)
+                .then((cache) => {
+                  cache.put(event.request, responseClone);
+                });
+
+            }
+
+            return networkResponse;
+          })
+
+          .catch(() => {
+            return cachedResponse;
           });
 
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
+        // Return cached immediately, update in background
+        return cachedResponse || fetchPromise;
 
-      return cachedResponse || fetchPromise;
-    })
+      })
+
   );
+
 });

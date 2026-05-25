@@ -5,18 +5,88 @@ let folders = [];
 let notes = [];
 const API_BASE = '/api';
 
+let auth = null;
+let currentUser = null;
+
 // Initialize app
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   registerServiceWorker();
-  loadFolders();
-  setupEventListeners();
   
+  try {
+    // Fetch firebase config from server
+    const configResponse = await fetch(`${API_BASE}/firebase-config`);
+    const firebaseConfig = await configResponse.json();
+    
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    
+    // Auth State Listener
+    auth.onAuthStateChanged(user => {
+      if (user) {
+        currentUser = user;
+        document.getElementById('authOverlay').style.display = 'none';
+        document.querySelector('.app-container').style.display = 'flex';
+        
+        // Update UI with user info
+        document.getElementById('userName').textContent = user.displayName;
+        if (user.photoURL) {
+          document.getElementById('userPhoto').src = user.photoURL;
+          document.getElementById('userPhoto').style.display = 'block';
+        }
+        
+        loadFolders();
+      } else {
+        currentUser = null;
+        document.getElementById('authOverlay').style.display = 'flex';
+        document.querySelector('.app-container').style.display = 'none';
+      }
+    });
+
+    setupEventListeners();
+  } catch (error) {
+    console.error('Failed to initialize Firebase:', error);
+    showToast('App configuration error', 'danger');
+  }
+
   // Handle window resize for responsive view
   window.addEventListener('resize', updateMobileView);
   
   // Initial mobile view check
   updateMobileView();
 });
+
+// Helper for authenticated requests
+async function authenticatedFetch(url, options = {}) {
+  // If no current user but we're trying to fetch, check if Firebase has a user we haven't seen yet
+  if (!currentUser && auth && auth.currentUser) {
+    currentUser = auth.currentUser;
+  }
+
+  if (!currentUser) {
+    console.warn('authenticatedFetch called without user', url);
+    // Don't show toast for initial cleanup/checks, only for explicit user actions
+    if (options.method && options.method !== 'GET') {
+      showToast('Please sign in to continue.', 'warning');
+    }
+    return new Response(JSON.stringify({ error: "No token provided" }), { status: 401 });
+  }
+  
+  try {
+    const token = await currentUser.getIdToken(true); // Force refresh if needed
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (error) {
+    console.error('Auth fetch error:', error);
+    return new Response(JSON.stringify({ error: "Authentication failed" }), { status: 401 });
+  }
+}
 
 // Service Worker Registration
 async function registerServiceWorker() {
@@ -79,6 +149,28 @@ function setupEventListeners() {
     });
   }
 
+  // Auth Button Listeners
+  const googleSignInBtn = document.getElementById('googleSignInBtn');
+  if (googleSignInBtn) {
+    googleSignInBtn.addEventListener('click', () => {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      auth.signInWithPopup(provider).catch(error => {
+        console.error('Sign-in error:', error);
+        showToast('Sign-in failed', 'danger');
+      });
+    });
+  }
+
+  const signOutBtn = document.getElementById('signOutBtn');
+  if (signOutBtn) {
+    signOutBtn.addEventListener('click', () => {
+      auth.signOut().catch(error => {
+        console.error('Sign-out error:', error);
+        showToast('Sign-out failed', 'danger');
+      });
+    });
+  }
+
   document.getElementById('folderForm').addEventListener('submit', (e) => {
     e.preventDefault();
     createFolder();
@@ -118,7 +210,7 @@ function showToast(message, type = 'success') {
 // Load all folders
 async function loadFolders() {
   try {
-    const response = await fetch(`${API_BASE}/folders`);
+    const response = await authenticatedFetch(`${API_BASE}/folders`);
     if (!response.ok) throw new Error('Failed to load folders');
     
     folders = await response.json();
@@ -129,7 +221,6 @@ async function loadFolders() {
     }
   } catch (error) {
     console.error('Error loading folders:', error);
-    showToast('Error loading folders', 'danger');
   }
 }
 
@@ -212,7 +303,7 @@ async function selectFolder(folderId) {
     }
   }
   try {
-    const response = await fetch(`${API_BASE}/notes/folder/${folderId}`);
+    const response = await authenticatedFetch(`${API_BASE}/notes/folder/${folderId}`);
     if (!response.ok) throw new Error('Failed to load notes');
     
     notes = await response.json();
@@ -272,9 +363,8 @@ async function createFolder() {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/folders`, {
+    const response = await authenticatedFetch(`${API_BASE}/folders`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description, color })
     });
     
@@ -318,10 +408,11 @@ async function editFolder(folderId) {
 
 // Update folder
 async function updateFolder() {
-  const folderId = window.editingFolderId;
+  const folderId = window.editingFolderId || currentFolderId;
   const name = document.getElementById('editFolderName').value;
   const description = document.getElementById('editFolderDesc').value;
-  const color = document.querySelector('input[name="editFolderColor"]:checked').value;
+  const colorPicker = document.querySelector('input[name="editFolderColor"]:checked');
+  const color = colorPicker ? colorPicker.value : '#4f46e5';
   
   if (!name.trim()) {
     showToast('Please enter a folder name', 'warning');
@@ -329,9 +420,8 @@ async function updateFolder() {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/folders/${folderId}`, {
+    const response = await authenticatedFetch(`${API_BASE}/folders/${folderId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description, color })
     });
     
@@ -362,7 +452,7 @@ async function deleteFolder(folderId) {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/folders/${folderId}`, {
+    const response = await authenticatedFetch(`${API_BASE}/folders/${folderId}`, {
       method: 'DELETE'
     });
     
@@ -459,18 +549,20 @@ async function createNote() {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/notes`, {
+    const response = await authenticatedFetch(`${API_BASE}/notes`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        content,
+      body: JSON.stringify({ 
+        title, 
+        content, 
         folderId: currentFolderId,
         color
       })
     });
     
-    if (!response.ok) throw new Error('Failed to create note');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Failed to create note');
+    }
     
     const newNote = await response.json();
     notes.push(newNote);
@@ -491,7 +583,7 @@ async function createNote() {
 // View note
 async function viewNote(noteId) {
   try {
-    const response = await fetch(`${API_BASE}/notes/${noteId}`);
+    const response = await authenticatedFetch(`${API_BASE}/notes/${noteId}`);
     if (!response.ok) throw new Error('Failed to load note');
     
     const note = await response.json();
@@ -512,7 +604,7 @@ async function viewNote(noteId) {
 // Open edit note modal
 async function openEditNote(noteId) {
   try {
-    const response = await fetch(`${API_BASE}/notes/${noteId}`);
+    const response = await authenticatedFetch(`${API_BASE}/notes/${noteId}`);
     if (!response.ok) throw new Error('Failed to load note');
     
     const note = await response.json();
@@ -548,16 +640,17 @@ async function updateNote() {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/notes/${noteId}`, {
+    const response = await authenticatedFetch(`${API_BASE}/notes/${currentNoteId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, content, color })
     });
     
     if (!response.ok) throw new Error('Failed to update note');
     
     // Reload notes
-    const notesResponse = await fetch(`${API_BASE}/notes/folder/${currentFolderId}`);
+    const notesResponse = await authenticatedFetch(`${API_BASE}/notes/folder/${currentFolderId}`);
+    if (!notesResponse.ok) throw new Error('Failed to reload notes');
+    
     notes = await notesResponse.json();
     
     const modal = bootstrap.Modal.getInstance(document.getElementById('editNoteModal'));
@@ -578,7 +671,7 @@ async function deleteNote(noteId) {
   }
   
   try {
-    const response = await fetch(`${API_BASE}/notes/${noteId}`, {
+    const response = await authenticatedFetch(`${API_BASE}/notes/${noteId}`, {
       method: 'DELETE'
     });
     
@@ -615,12 +708,11 @@ function editCurrentNote() {
   }
 }
 
-// Toggle pin note
+// Pin/Unpin note
 async function togglePin(noteId, isPinned) {
   try {
-    const response = await fetch(`${API_BASE}/notes/${noteId}`, {
+    const response = await authenticatedFetch(`${API_BASE}/notes/${noteId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isPinned: !isPinned })
     });
     

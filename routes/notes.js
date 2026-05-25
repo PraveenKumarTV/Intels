@@ -2,11 +2,18 @@ const express = require('express');
 const router = express.Router();
 const Note = require('../models/Note');
 const Folder = require('../models/Folder');
+const { authenticate } = require('../middleware/auth');
 
-// Get all notes for a folder
+// Apply authentication to all note routes
+router.use(authenticate);
+
+// Get all notes for a folder (belonging to current user)
 router.get('/folder/:folderId', async (req, res) => {
   try {
-    const notes = await Note.find({ folderId: req.params.folderId }).sort({ updatedAt: -1 });
+    const notes = await Note.find({ 
+      folderId: req.params.folderId, 
+      userId: req.user.uid 
+    }).sort({ updatedAt: -1 });
     res.json(notes);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching notes' });
@@ -16,7 +23,7 @@ router.get('/folder/:folderId', async (req, res) => {
 // Get note by ID
 router.get('/:id', async (req, res) => {
   try {
-    const note = await Note.findById(req.params.id);
+    const note = await Note.findOne({ _id: req.params.id, userId: req.user.uid });
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
@@ -39,22 +46,30 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Note title is required' });
     }
 
-    // Check if folder exists
-    const folder = await Folder.findById(folderId);
+    // Explicitly check for user ID
+    if (!req.user || !req.user.uid) {
+      return res.status(401).json({ error: 'User identification failed' });
+    }
+
+    // Check if folder exists and belongs to user
+    const folder = await Folder.findOne({ _id: folderId, userId: req.user.uid });
     if (!folder) {
-      return res.status(404).json({ error: 'Folder not found' });
+      return res.status(404).json({ error: 'Folder not found or unauthorized' });
     }
 
     const note = new Note({
+      userId: req.user.uid, // Save the unique Firebase UID
       title: title.trim(),
       content: content || '',
       folderId,
       color: color || '#ffffff'
     });
 
+    console.log('Saving note for user:', req.user.uid);
     await note.save();
     res.status(201).json(note);
   } catch (error) {
+    console.error('Note creation error:', error);
     res.status(500).json({ error: 'Error creating note' });
   }
 });
@@ -68,8 +83,8 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'Note title cannot be empty' });
     }
 
-    const note = await Note.findByIdAndUpdate(
-      req.params.id,
+    const note = await Note.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.uid },
       {
         title: title || undefined,
         content: content !== undefined ? content : undefined,
@@ -93,7 +108,7 @@ router.put('/:id', async (req, res) => {
 // Delete note
 router.delete('/:id', async (req, res) => {
   try {
-    const note = await Note.findByIdAndDelete(req.params.id);
+    const note = await Note.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
